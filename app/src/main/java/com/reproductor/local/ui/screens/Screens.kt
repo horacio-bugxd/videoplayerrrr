@@ -1,9 +1,12 @@
 package com.reproductor.local.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import android.util.Size
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -25,18 +29,22 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LoadingIndicator
-import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +56,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.reproductor.local.PlayerActivity
 import com.reproductor.local.data.VideoItem
 import com.reproductor.local.util.formatDuration
 import com.reproductor.local.util.formatSize
@@ -79,15 +88,21 @@ fun VideosScreen(
                     modifier = Modifier.align(Alignment.Center),
                     style = MaterialTheme.typography.bodyLarge,
                 )
-                else -> LazyColumn(
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(videos, key = { it.id }) { video ->
-                        VideoRow(video, onClick = { onOpen(video) })
-                    }
-                }
+                else -> VideoList(videos, onOpen)
             }
+        }
+    }
+}
+
+/** Lista de vídeos reutilizable (la usan "Videos" y el interior de cada carpeta). */
+@Composable
+private fun VideoList(videos: List<VideoItem>, onOpen: (VideoItem) -> Unit) {
+    LazyColumn(
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(videos, key = { it.id }) { video ->
+            VideoRow(video, onClick = { onOpen(video) })
         }
     }
 }
@@ -174,17 +189,42 @@ fun FoldersScreen(
     hasPermission: Boolean,
     onRequestPermission: () -> Unit,
 ) {
+    val context = LocalContext.current
+    // Carpeta abierta ahora mismo (null = se ve la lista de carpetas)
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    val current = selected
+
+    val openVideo = { video: VideoItem ->
+        context.startActivity(Intent(context, PlayerActivity::class.java).setData(video.uri))
+    }
+
+    // El botón "atrás" del móvil vuelve a la lista de carpetas
+    BackHandler(enabled = current != null) { selected = null }
+
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val folders = videos.groupBy { it.folder }.toList().sortedBy { it.first.lowercase() }
+
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
-        topBar = { LargeTopAppBar(title = { Text("Carpetas") }, scrollBehavior = scroll) },
+        topBar = {
+            LargeTopAppBar(
+                title = { Text(current ?: "Carpetas", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = {
+                    if (current != null) {
+                        IconButton(onClick = { selected = null }) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Volver")
+                        }
+                    }
+                },
+                scrollBehavior = scroll,
+            )
+        },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
-            if (!hasPermission) {
-                PermissionPrompt(onRequestPermission)
-            } else {
-                LazyColumn(
+            when {
+                !hasPermission -> PermissionPrompt(onRequestPermission)
+                current != null -> VideoList(videos.filter { it.folder == current }, openVideo)
+                else -> LazyColumn(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -196,7 +236,9 @@ fun FoldersScreen(
                             colors = ListItemDefaults.colors(
                                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                             ),
-                            modifier = Modifier.clip(MaterialTheme.shapes.large),
+                            modifier = Modifier
+                                .clip(MaterialTheme.shapes.large)
+                                .clickable { selected = name },
                         )
                     }
                 }
