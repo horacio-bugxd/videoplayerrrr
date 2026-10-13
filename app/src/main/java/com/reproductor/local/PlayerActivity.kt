@@ -3,7 +3,9 @@ package com.reproductor.local
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,26 +19,39 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Forward10
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Replay10
-import androidx.compose.material3.FilledIconButton
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedIconToggleButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -54,8 +69,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -93,9 +110,10 @@ class PlayerActivity : ComponentActivity() {
             finish()
             return
         }
+        val title = queryTitle(uri)
 
         val exo = ExoPlayer.Builder(this).build().also {
-            // Saltar al fotograma clave más cercano: hace que adelantar/atrasar sea mucho más rápido en vídeos largos
+            // Saltar al fotograma clave más cercano: adelantar/atrasar es mucho más rápido en vídeos largos
             it.setSeekParameters(SeekParameters.CLOSEST_SYNC)
             it.setMediaItem(MediaItem.fromUri(uri))
             it.prepare()
@@ -104,10 +122,23 @@ class PlayerActivity : ComponentActivity() {
         exoPlayer = exo
 
         setContent {
-            AppTheme {
-                PlayerScreen(exo = exo, onBack = { finish() })
+            // Siempre tema oscuro: los controles van encima del vídeo
+            AppTheme(darkTheme = true) {
+                PlayerScreen(exo = exo, title = title, onBack = { finish() })
             }
         }
+    }
+
+    /** Lee el nombre del archivo desde MediaStore. */
+    private fun queryTitle(uri: Uri): String {
+        val name = try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        } catch (e: Exception) {
+            null
+        }
+        return name ?: "Vídeo"
     }
 
     override fun onStop() {
@@ -124,7 +155,7 @@ class PlayerActivity : ComponentActivity() {
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
+private fun PlayerScreen(exo: ExoPlayer, title: String, onBack: () -> Unit) {
     val context = LocalContext.current
     val activity = context as Activity
     val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
@@ -137,13 +168,16 @@ private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
     var seeking by remember { mutableStateOf(false) }
     var fitMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var hud by remember { mutableStateOf<String?>(null) }
+    var speed by remember { mutableFloatStateOf(1f) }
+    var repeatOn by remember { mutableStateOf(false) }
+    var locked by remember { mutableStateOf(false) }
     var brightness by remember {
         mutableFloatStateOf(activity.window.attributes.screenBrightness.let { if (it < 0f) 0.5f else it })
     }
     var volume by remember {
         mutableFloatStateOf(audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat())
     }
-    // Se pone en true mientras hay 2 dedos en pantalla (pellizco), para ignorar los deslizamientos
+    // true mientras hay 2 dedos en pantalla (pellizco), para ignorar los deslizamientos
     val multiTouch = remember { BooleanArray(1) }
 
     DisposableEffect(exo) {
@@ -200,6 +234,19 @@ private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
         }
     }
 
+    fun cycleFit() {
+        fitMode = when (fitMode) {
+            AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+        }
+        hud = when (fitMode) {
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Zoom"
+            AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Estirar"
+            else -> "Ajustar"
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
 
         // 1) El vídeo
@@ -223,11 +270,13 @@ private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
                     detectTapGestures(
                         onTap = { controlsVisible = !controlsVisible },
                         onDoubleTap = { offset ->
-                            val third = size.width / 3f
-                            when {
-                                offset.x < third -> seekBy(-10_000L)
-                                offset.x > 2 * third -> seekBy(10_000L)
-                                else -> togglePlay()
+                            if (!locked) {
+                                val third = size.width / 3f
+                                when {
+                                    offset.x < third -> seekBy(-10_000L)
+                                    offset.x > 2 * third -> seekBy(10_000L)
+                                    else -> togglePlay()
+                                }
                             }
                         },
                     )
@@ -244,13 +293,13 @@ private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
                             target = startPos
                         },
                         onDragEnd = {
-                            if (!multiTouch[0]) {
+                            if (!multiTouch[0] && !locked) {
                                 exo.seekTo(target)
                                 position = target
                             }
                         },
                         onHorizontalDrag = { change, dx ->
-                            if (!multiTouch[0]) {
+                            if (!multiTouch[0] && !locked) {
                                 change.consume()
                                 totalDx += dx
                                 val total = exo.duration.coerceAtLeast(0L)
@@ -267,7 +316,7 @@ private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
                     detectVerticalDragGestures(
                         onDragStart = { offset -> leftSide = offset.x < size.width / 2f },
                         onVerticalDrag = { change, dy ->
-                            if (!multiTouch[0]) {
+                            if (!multiTouch[0] && !locked) {
                                 change.consume()
                                 val fraction = -dy / size.height * 1.3f
                                 if (leftSide) {
@@ -285,7 +334,7 @@ private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
                         },
                     )
                 }
-                // Pellizco: separar dedos = rellenar pantalla (zoom), juntar = ajustar
+                // Pellizco: separar dedos = zoom (rellenar), juntar = ajustar
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
@@ -298,12 +347,14 @@ private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
                             }
                         } while (event.changes.any { it.pressed })
                         multiTouch[0] = false
-                        if (zoomTotal > 1.15f) {
-                            fitMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                            hud = "Zoom"
-                        } else if (zoomTotal < 0.87f) {
-                            fitMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                            hud = "Ajustar"
+                        if (!locked) {
+                            if (zoomTotal > 1.15f) {
+                                fitMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                hud = "Zoom"
+                            } else if (zoomTotal < 0.87f) {
+                                fitMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                hud = "Ajustar"
+                            }
                         }
                     }
                 }
@@ -325,89 +376,246 @@ private fun PlayerScreen(exo: ExoPlayer, onBack: () -> Unit) {
             }
         }
 
-        // 4) Controles
+        // 4) Controles (o solo el botón de desbloqueo si está bloqueado)
         AnimatedVisibility(visible = controlsVisible, modifier = Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxSize()) {
-
-                // Barra superior
-                Row(
-                    Modifier
-                        .align(Alignment.TopStart)
-                        .fillMaxWidth()
-                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent)))
-                        .windowInsetsPadding(WindowInsets.safeDrawing)
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Atrás", tint = Color.White)
-                    }
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = {
-                        fitMode = when (fitMode) {
-                            AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                            AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        }
-                        hud = when (fitMode) {
-                            AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Zoom"
-                            AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Estirar"
-                            else -> "Ajustar"
-                        }
-                    }) {
-                        Icon(Icons.Rounded.AspectRatio, contentDescription = "Ajustar pantalla", tint = Color.White)
+            if (locked) {
+                Box(Modifier.fillMaxSize()) {
+                    FilledTonalIconButton(
+                        onClick = {
+                            locked = false
+                            hud = "Desbloqueado"
+                        },
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .windowInsetsPadding(WindowInsets.safeDrawing)
+                            .padding(start = 24.dp)
+                            .size(56.dp),
+                        shape = CircleShape,
+                    ) {
+                        Icon(Icons.Rounded.Lock, contentDescription = "Desbloquear")
                     }
                 }
+            } else {
+                PlayerControls(
+                    title = title,
+                    isPlaying = isPlaying,
+                    position = position,
+                    duration = duration,
+                    speed = speed,
+                    repeatOn = repeatOn,
+                    fitChanged = fitMode != AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                    onBack = onBack,
+                    onSeekBy = { seekBy(it) },
+                    onTogglePlay = { togglePlay() },
+                    onScrub = {
+                        seeking = true
+                        position = it
+                    },
+                    onScrubFinished = {
+                        exo.seekTo(position)
+                        seeking = false
+                    },
+                    onSpeedSelected = {
+                        speed = it
+                        exo.setPlaybackSpeed(it)
+                        hud = "Velocidad ${it}x"
+                    },
+                    onCycleFit = { cycleFit() },
+                    onToggleRepeat = {
+                        repeatOn = !repeatOn
+                        exo.repeatMode = if (repeatOn) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                        hud = if (repeatOn) "Repetir: activado" else "Repetir: desactivado"
+                    },
+                    onLock = {
+                        locked = true
+                        hud = "Bloqueado"
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+}
 
-                // Centro: -10 s, pausa/reproducir, +10 s
-                Row(
-                    Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(32.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+private val GroupStart = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp, topEnd = 8.dp, bottomEnd = 8.dp)
+private val GroupMiddle = RoundedCornerShape(8.dp)
+private val GroupEnd = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 24.dp, bottomEnd = 24.dp)
+
+/** Controles con el estilo de la pantalla "Reproduciendo ahora" de Metrolist, adaptados a horizontal. */
+@Composable
+private fun PlayerControls(
+    title: String,
+    isPlaying: Boolean,
+    position: Long,
+    duration: Long,
+    speed: Float,
+    repeatOn: Boolean,
+    fitChanged: Boolean,
+    onBack: () -> Unit,
+    onSeekBy: (Long) -> Unit,
+    onTogglePlay: () -> Unit,
+    onScrub: (Long) -> Unit,
+    onScrubFinished: () -> Unit,
+    onSpeedSelected: (Float) -> Unit,
+    onCycleFit: () -> Unit,
+    onToggleRepeat: () -> Unit,
+    onLock: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier) {
+        // Degradados para que el texto se lea sobre el vídeo
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(120.dp)
+                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent)))
+        )
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.7f)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.88f))))
+        )
+
+        // Arriba: botón atrás + "Reproduciendo ahora"
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            FilledTonalIconButton(
+                onClick = onBack,
+                modifier = Modifier.align(Alignment.CenterStart).size(48.dp),
+                shape = CircleShape,
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Atrás")
+            }
+            Text(
+                "Reproduciendo ahora",
+                modifier = Modifier.align(Alignment.Center),
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+
+        // Abajo: título, progreso, botones y grupo de opciones
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(start = 32.dp, end = 32.dp, bottom = 20.dp)
+        ) {
+            Text(
+                title,
+                color = Color.White,
+                style = MaterialTheme.typography.titleLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+
+            val maxPos = duration.coerceAtLeast(1L).toFloat()
+            Slider(
+                value = position.toFloat().coerceIn(0f, maxPos),
+                onValueChange = { onScrub(it.toLong()) },
+                onValueChangeFinished = onScrubFinished,
+                valueRange = 0f..maxPos,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(formatDuration(position), color = Color.White, style = MaterialTheme.typography.labelLarge)
+                Text(formatDuration(duration), color = Color.White, style = MaterialTheme.typography.labelLarge)
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Botones principales: -10 s, Reproducir/Pausar (píldora), +10 s
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilledTonalIconButton(
+                    onClick = { onSeekBy(-10_000L) },
+                    modifier = Modifier.size(64.dp),
+                    shape = CircleShape,
                 ) {
-                    IconButton(onClick = { seekBy(-10_000L) }, modifier = Modifier.size(56.dp)) {
-                        Icon(Icons.Rounded.Replay10, contentDescription = "Atrasar 10 segundos", tint = Color.White, modifier = Modifier.size(36.dp))
+                    Icon(Icons.Rounded.Replay10, contentDescription = "Atrasar 10 segundos", modifier = Modifier.size(28.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Button(
+                    onClick = onTogglePlay,
+                    modifier = Modifier.height(64.dp).widthIn(min = 220.dp),
+                ) {
+                    Icon(if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isPlaying) "Pausar" else "Reproducir", style = MaterialTheme.typography.titleMedium)
+                }
+                Spacer(Modifier.width(12.dp))
+                FilledTonalIconButton(
+                    onClick = { onSeekBy(10_000L) },
+                    modifier = Modifier.size(64.dp),
+                    shape = CircleShape,
+                ) {
+                    Icon(Icons.Rounded.Forward10, contentDescription = "Adelantar 10 segundos", modifier = Modifier.size(28.dp))
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Grupo de botones: velocidad, ajustar pantalla, repetir, bloquear
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                var speedMenu by remember { mutableStateOf(false) }
+                Box {
+                    GroupButton(checked = speed != 1f, shape = GroupStart, onClick = { speedMenu = true }) {
+                        Icon(Icons.Rounded.Speed, contentDescription = "Velocidad")
                     }
-                    FilledIconButton(onClick = { togglePlay() }, modifier = Modifier.size(72.dp)) {
-                        Icon(
-                            if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = if (isPlaying) "Pausar" else "Reproducir",
-                            modifier = Modifier.size(40.dp),
-                        )
-                    }
-                    IconButton(onClick = { seekBy(10_000L) }, modifier = Modifier.size(56.dp)) {
-                        Icon(Icons.Rounded.Forward10, contentDescription = "Adelantar 10 segundos", tint = Color.White, modifier = Modifier.size(36.dp))
+                    DropdownMenu(expanded = speedMenu, onDismissRequest = { speedMenu = false }) {
+                        listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { s ->
+                            DropdownMenuItem(
+                                text = { Text(if (s == 1f) "Normal" else "${s}x") },
+                                onClick = {
+                                    onSpeedSelected(s)
+                                    speedMenu = false
+                                },
+                            )
+                        }
                     }
                 }
-
-                // Barra inferior con el progreso (con margen para no chocar con el gesto de Android)
-                val maxPos = duration.coerceAtLeast(1L).toFloat()
-                Row(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f))))
-                        .windowInsetsPadding(WindowInsets.safeDrawing)
-                        .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 28.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(formatDuration(position), color = Color.White, style = MaterialTheme.typography.labelMedium)
-                    Slider(
-                        value = position.toFloat().coerceIn(0f, maxPos),
-                        onValueChange = {
-                            seeking = true
-                            position = it.toLong()
-                        },
-                        onValueChangeFinished = {
-                            exo.seekTo(position)
-                            seeking = false
-                        },
-                        valueRange = 0f..maxPos,
-                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-                    )
-                    Text(formatDuration(duration), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                GroupButton(checked = fitChanged, shape = GroupMiddle, onClick = onCycleFit) {
+                    Icon(Icons.Rounded.AspectRatio, contentDescription = "Ajustar pantalla")
+                }
+                GroupButton(checked = repeatOn, shape = GroupMiddle, onClick = onToggleRepeat) {
+                    Icon(Icons.Rounded.Repeat, contentDescription = "Repetir")
+                }
+                GroupButton(checked = false, shape = GroupEnd, onClick = onLock) {
+                    Icon(Icons.Rounded.Lock, contentDescription = "Bloquear controles")
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun GroupButton(
+    checked: Boolean,
+    shape: Shape,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    OutlinedIconToggleButton(
+        checked = checked,
+        onCheckedChange = { onClick() },
+        modifier = Modifier.size(width = 56.dp, height = 48.dp),
+        shape = shape,
+    ) {
+        content()
     }
 }
